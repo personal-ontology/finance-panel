@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finance — personal-ontology</title>
+<style>
+  :root {
+    --bg: #282828;
+    --bg-2: #1f1f1f;
+    --line: #3a3a3a;
+    --fg: #eaeaea;
+    --muted: #6a6a6a;
+    --red: #f7768e;
+    --green: #9ece6a;
+    --blue: #7aa2f7;
+    --purple: #bb9af7;
+    --cyan: #7dcfff;
+    --orange: #ff9e64;
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); color: var(--fg); }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    margin: 0;
+    padding: 28px 24px 80px;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding-bottom: 16px;
+    margin-bottom: 28px;
+    border-bottom: 1px solid var(--line);
+  }
+  h1 { margin: 0; font-size: 18px; font-weight: 500; letter-spacing: -0.1px; }
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px;
+    border-radius: 4px;
+    font-size: 11.5px;
+    font-weight: 500;
+  }
+  .status.ok { background: rgba(158, 206, 106, 0.13); color: var(--green); }
+  .status.needs_reconnect { background: rgba(247, 118, 142, 0.13); color: var(--red); }
+  .status.stale { background: rgba(255, 158, 100, 0.13); color: var(--orange); }
+  .meta { color: var(--muted); font-size: 12px; }
+  .spacer { flex: 1; }
+  button {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--fg);
+    padding: 5px 11px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: inherit;
+    transition: background 80ms ease;
+  }
+  button:hover:not(:disabled) { background: #333; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .account { margin-bottom: 36px; }
+  .account-head { display: flex; align-items: baseline; gap: 12px; }
+  .account-name { font-size: 13px; color: var(--muted); }
+  .account-iban {
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.5px;
+  }
+  .balance-main {
+    font-size: 34px;
+    font-weight: 300;
+    letter-spacing: -0.7px;
+    margin: 6px 0 4px;
+  }
+  .balance-main .currency { color: var(--muted); font-size: 18px; margin-left: 4px; }
+  .balance-other { display: flex; gap: 18px; font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+  .balance-other strong { color: var(--fg); font-weight: 500; }
+  .tx-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  .tx-table td {
+    padding: 7px 0;
+    border-bottom: 1px solid var(--line);
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 12px;
+  }
+  .tx-date { color: var(--muted); width: 110px; }
+  .tx-amount { width: 140px; text-align: right; padding-right: 14px !important; }
+  .tx-amount.debit { color: var(--red); }
+  .tx-amount.credit { color: var(--green); }
+  .tx-cp { color: var(--fg); }
+  .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
+  .token-form {
+    max-width: 380px;
+    margin: 100px auto 0;
+    padding: 24px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  .token-form h2 { margin: 0 0 6px; font-size: 16px; font-weight: 500; }
+  .token-form p { margin: 0 0 16px; color: var(--muted); font-size: 12.5px; }
+  .token-form input {
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--fg);
+    border-radius: 4px;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 12px;
+  }
+  .token-form input:focus { outline: none; border-color: var(--blue); }
+  .token-form button {
+    margin-top: 12px;
+    padding: 8px 16px;
+    background: var(--blue);
+    border-color: var(--blue);
+    color: var(--bg);
+    font-weight: 500;
+  }
+  .token-form button:hover:not(:disabled) { background: #8eb1fa; }
+  .err { color: var(--red); margin-top: 10px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap" id="root"><div class="empty">Loading…</div></div>
+<script>
+const TOKEN_KEY = "finance_panel_bearer";
+const $ = (id) => document.getElementById(id);
+
+const getToken = () => localStorage.getItem(TOKEN_KEY);
+const saveToken = (t) => localStorage.setItem(TOKEN_KEY, t);
+const clearToken = () => localStorage.removeItem(TOKEN_KEY);
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function fmtTs(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function maskIban(iban) {
+  if (!iban) return "";
+  const head = iban.slice(0, 4);
+  const tail = iban.slice(-4);
+  return `${head} •••• •••• •••• ${tail}`;
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, {
+    ...opts,
+    headers: { ...(opts && opts.headers), Authorization: "Bearer " + getToken() },
+  });
+  if (r.status === 401) {
+    clearToken();
+    renderTokenForm("Token rejected. Try again.");
+    throw new Error("unauthorized");
+  }
+  if (!r.ok) throw new Error("API " + r.status + " on " + path);
+  return r.json();
+}
+
+function renderTokenForm(errMsg) {
+  $("root").innerHTML = `
+    <div class="token-form">
+      <h2>Finance panel</h2>
+      <p>Paste your bearer token to view your accounts. Stored in this browser only.</p>
+      <input id="t" type="password" placeholder="bearer token" autocomplete="off" autofocus>
+      <div><button id="save">Save</button></div>
+      ${errMsg ? `<div class="err">${esc(errMsg)}</div>` : ""}
+    </div>`;
+  $("save").addEventListener("click", () => {
+    const v = $("t").value.trim();
+    if (v) { saveToken(v); render(); }
+  });
+  $("t").addEventListener("keydown", (e) => { if (e.key === "Enter") $("save").click(); });
+}
+
+async function refreshNow() {
+  const btn = $("refresh");
+  btn.disabled = true;
+  btn.textContent = "Refreshing…";
+  try {
+    await api("/refresh", { method: "POST" });
+    await render();
+  } catch (e) {
+    if (e.message !== "unauthorized") alert("Refresh failed: " + e.message);
+  } finally {
+    if ($("refresh")) {
+      $("refresh").disabled = false;
+      $("refresh").textContent = "Refresh now";
+    }
+  }
+}
+
+async function render() {
+  if (!getToken()) return renderTokenForm();
+  $("root").innerHTML = '<div class="empty">Loading…</div>';
+
+  try {
+    const [{ data: health }, { data }] = await Promise.all([api("/health"), api("/data")]);
+
+    const statusLabel = {
+      ok: "✓ ok",
+      needs_reconnect: "⚠ needs reconnect",
+      stale: "● stale",
+    }[health.status] || health.status;
+
+    let html = `
+      <header>
+        <h1>Finance</h1>
+        <span class="status ${esc(health.status)}">${esc(statusLabel)}</span>
+        <span class="meta">refreshed ${esc(fmtTs(health.last_refresh_at))}</span>
+        <span class="spacer"></span>
+        <button id="refresh">Refresh now</button>
+      </header>`;
+
+    if (!data.accounts.length) {
+      html += '<div class="empty">No accounts linked.</div>';
+    }
+
+    const accountSections = await Promise.all(data.accounts.map(async (acc) => {
+      const headline = acc.headline_balance;
+      const available = acc.balances.find((b) => b.balance_type === "ITAV")
+        || acc.balances.find((b) => b.balance_type === "CLAV");
+
+      const txs = (await api(`/accounts/${acc.uid}/transactions?limit=15`)).data.transactions;
+      const txRows = txs.map((t) => {
+        const isDebit = t.credit_debit === "DBIT";
+        const sign = isDebit ? "−" : "+";
+        const amt = `${sign}${t.amount_value} ${t.amount_currency}`;
+        const cp = t.counterparty_name || (t.remittance ? t.remittance.slice(0, 70) : "—");
+        return `<tr>
+          <td class="tx-date">${esc(t.booking_date || "")}</td>
+          <td class="tx-amount ${isDebit ? "debit" : "credit"}">${esc(amt)}</td>
+          <td class="tx-cp">${esc(cp)}</td>
+        </tr>`;
+      }).join("");
+
+      const headlineHtml = headline
+        ? `${esc(headline.amount)}<span class="currency">${esc(headline.currency)}</span>`
+        : "—";
+
+      const otherHtml = [
+        available && (!headline || available.balance_type !== headline.balance_type)
+          ? `<div>Available <strong>${esc(available.amount)} ${esc(available.currency)}</strong></div>`
+          : "",
+        `<div>Transactions <strong>${esc(acc.transactions_count)}</strong></div>`,
+      ].join("");
+
+      return `
+        <div class="account">
+          <div class="account-head">
+            <div class="account-name">${esc(acc.name || "Account")}</div>
+            <div class="account-iban">${esc(maskIban(acc.iban))}</div>
+          </div>
+          <div class="balance-main">${headlineHtml}</div>
+          <div class="balance-other">${otherHtml}</div>
+          ${txRows ? `<table class="tx-table">${txRows}</table>` : ""}
+        </div>`;
+    }));
+
+    html += accountSections.join("");
+    $("root").innerHTML = html;
+    $("refresh")?.addEventListener("click", refreshNow);
+  } catch (e) {
+    if (e.message !== "unauthorized") {
+      $("root").innerHTML = `<div class="empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+}
+
+render();
+</script>
+</body>
+</html>

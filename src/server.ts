@@ -7,6 +7,9 @@ import {
   listTransactions,
   maxLastRefresh,
 } from "./db.ts";
+import { readFileSync } from "node:fs";
+
+const UI_HTML = readFileSync(new URL("./ui.html", import.meta.url), "utf8");
 
 const SOURCE = "finance";
 const PORT = Number(process.env.PORT || 8001);
@@ -26,8 +29,13 @@ const app = new Hono();
 
 // Bearer-auth middleware. No-op when PANEL_BEARER_TOKEN is unset (loopback dev mode).
 // Active when set (deployments behind Caddy on the Hetzner box).
+// `/` and `/favicon.ico` are intentionally exempt — the HTML page itself contains no
+// secrets and asks the user to paste their token, which is stored in localStorage and
+// sent on every subsequent API call.
+const UNAUTHED_PATHS = new Set(["/", "/favicon.ico"]);
 app.use("*", async (c, next) => {
   if (!BEARER_TOKEN) return next();
+  if (UNAUTHED_PATHS.has(c.req.path)) return next();
   const header = c.req.header("Authorization") || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
   if (token !== BEARER_TOKEN) {
@@ -35,6 +43,9 @@ app.use("*", async (c, next) => {
   }
   return next();
 });
+
+// ── HTML view ───────────────────────────────────────────────────────────────
+app.get("/", (c) => c.html(UI_HTML));
 
 // ── Health ──────────────────────────────────────────────────────────────────
 app.get("/health", (c) => {
