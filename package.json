@@ -5,9 +5,11 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun run src/cli.ts"
+    "start": "bun run src/cli.ts",
+    "serve": "bun run src/server.ts"
   },
   "dependencies": {
+    "hono": "^4.12.22",
     "jsonwebtoken": "^9.0.2"
   },
   "devDependencies": {

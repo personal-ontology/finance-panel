@@ -153,6 +153,51 @@ export function upsertTransaction(row: TxRow): { inserted: boolean } {
   return { inserted: result.changes > 0 };
 }
 
+// ─── read queries used by CLI + HTTP server ─────────────────────────────────
+
+export type AccountRow = {
+  uid: string;
+  iban: string | null;
+  name: string | null;
+  currency: string | null;
+  aspsp_name: string;
+  aspsp_country: string;
+  consent_expires_at: string;
+  last_refresh_at: string | null;
+};
+
+export function listAccounts(): AccountRow[] {
+  return db
+    .prepare(
+      `SELECT uid, iban, name, currency, aspsp_name, aspsp_country, consent_expires_at, last_refresh_at
+       FROM accounts ORDER BY COALESCE(name, uid)`,
+    )
+    .all() as AccountRow[];
+}
+
+export type LatestBalance = {
+  balance_type: string;
+  amount: string;
+  currency: string;
+  fetched_at: string;
+};
+
+export function latestBalances(accountUid: string): LatestBalance[] {
+  return db
+    .prepare(
+      `SELECT b.balance_type, b.amount, b.currency, b.fetched_at
+       FROM balances b
+       INNER JOIN (
+         SELECT balance_type, MAX(fetched_at) AS max_at
+         FROM balances WHERE account_uid = ?
+         GROUP BY balance_type
+       ) latest ON b.balance_type = latest.balance_type AND b.fetched_at = latest.max_at
+       WHERE b.account_uid = ?
+       ORDER BY b.balance_type`,
+    )
+    .all(accountUid, accountUid) as LatestBalance[];
+}
+
 export function txCount(accountUid: string): number {
   const row = db
     .prepare("SELECT COUNT(*) AS c FROM transactions WHERE account_uid = ?")
@@ -163,7 +208,37 @@ export function txCount(accountUid: string): number {
 export function recentTransactions(accountUid: string, limit = 5): TxRow[] {
   return db
     .prepare(
-      "SELECT * FROM transactions WHERE account_uid = ? ORDER BY booking_date DESC, entry_reference DESC LIMIT ?",
+      `SELECT * FROM transactions WHERE account_uid = ?
+       ORDER BY booking_date DESC, entry_reference DESC LIMIT ?`,
     )
     .all(accountUid, limit) as TxRow[];
+}
+
+export function listTransactions(
+  accountUid: string,
+  opts: { date_from?: string; date_to?: string; limit?: number },
+): TxRow[] {
+  let sql = "SELECT * FROM transactions WHERE account_uid = ?";
+  const params: (string | number)[] = [accountUid];
+  if (opts.date_from) {
+    sql += " AND booking_date >= ?";
+    params.push(opts.date_from);
+  }
+  if (opts.date_to) {
+    sql += " AND booking_date <= ?";
+    params.push(opts.date_to);
+  }
+  sql += " ORDER BY booking_date DESC, entry_reference DESC";
+  if (opts.limit) {
+    sql += " LIMIT ?";
+    params.push(opts.limit);
+  }
+  return db.prepare(sql).all(...params) as TxRow[];
+}
+
+export function maxLastRefresh(): string | null {
+  const row = db.prepare("SELECT MAX(last_refresh_at) AS t FROM accounts").get() as {
+    t: string | null;
+  };
+  return row.t;
 }

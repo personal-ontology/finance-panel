@@ -1,0 +1,135 @@
+import { Hono } from "hono";
+import { refreshAll, loadValidSession } from "./refresh.ts";
+import {
+  listAccounts,
+  latestBalances,
+  txCount,
+  listTransactions,
+  maxLastRefresh,
+} from "./db.ts";
+
+const SOURCE = "finance";
+const PORT = Number(process.env.PORT || 8001);
+const HOSTNAME = process.env.HOSTNAME || "127.0.0.1";
+
+function envelope<T>(data: T) {
+  return {
+    data,
+    refreshed_at: new Date().toISOString(),
+    source: SOURCE,
+  };
+}
+
+const app = new Hono();
+
+// ── Health ──────────────────────────────────────────────────────────────────
+app.get("/health", (c) => {
+  const session = loadValidSession();
+  const lastRefresh = maxLastRefresh();
+  const accounts = listAccounts();
+
+  let status: "ok" | "needs_reconnect" | "stale" = "ok";
+  if (!session) status = "needs_reconnect";
+  else if (
+    lastRefresh &&
+    Date.now() - new Date(lastRefresh).getTime() > 24 * 60 * 60 * 1000
+  ) {
+    status = "stale";
+  }
+
+  return c.json(
+    envelope({
+      ok: !!session,
+      status,
+      session: session
+        ? {
+            valid_until: session.access.valid_until,
+            expires_in_days: Math.floor(
+              (new Date(session.access.valid_until).getTime() - Date.now()) /
+                (24 * 60 * 60 * 1000),
+            ),
+          }
+        : null,
+      accounts_count: accounts.length,
+      last_refresh_at: lastRefresh,
+    }),
+  );
+});
+
+// ── Headline summary (this is what the dashboard tile reads) ────────────────
+app.get("/data", (c) => {
+  const accounts = listAccounts().map((a) => {
+    const balances = latestBalances(a.uid);
+    // Prefer Closing booked → Closing available → Interim available → first
+    const headline =
+      balances.find((b) => b.balance_type === "CLBD") ??
+      balances.find((b) => b.balance_type === "CLAV") ??
+      balances.find((b) => b.balance_type === "ITAV") ??
+      balances[0] ??
+      null;
+    return {
+      uid: a.uid,
+      iban: a.iban,
+      name: a.name,
+      currency: a.currency,
+      aspsp_name: a.aspsp_name,
+      headline_balance: headline,
+      balances,
+      transactions_count: txCount(a.uid),
+      last_refresh_at: a.last_refresh_at,
+      consent_expires_at: a.consent_expires_at,
+    };
+  });
+  return c.json(envelope({ accounts }));
+});
+
+// ── List accounts (lightweight) ─────────────────────────────────────────────
+app.get("/accounts", (c) => {
+  return c.json(envelope({ accounts: listAccounts() }));
+});
+
+// ── Transactions for an account ─────────────────────────────────────────────
+app.get("/accounts/:uid/transactions", (c) => {
+  const uid = c.req.param("uid");
+  const date_from = c.req.query("date_from") || undefined;
+  const date_to = c.req.query("date_to") || undefined;
+  const limitStr = c.req.query("limit");
+  const limit = limitStr ? Math.min(Number(limitStr), 1000) : 100;
+
+  const txs = listTransactions(uid, { date_from, date_to, limit });
+  return c.json(envelope({ transactions: txs, count: txs.length }));
+});
+
+// ── Trigger refresh ─────────────────────────────────────────────────────────
+app.post("/refresh", async (c) => {
+  const session = loadValidSession();
+  if (!session) {
+    return c.json(
+      envelope({
+        ok: false,
+        error: "no_valid_session",
+        message: "Run the CLI (`bun run start`) to re-authorize.",
+      }),
+      409,
+    );
+  }
+  try {
+    const result = await refreshAll(session);
+    return c.json(envelope({ ok: true, result }));
+  } catch (e) {
+    return c.json(envelope({ ok: false, error: (e as Error).message }), 500);
+  }
+});
+
+// ── 404 fallback ────────────────────────────────────────────────────────────
+app.notFound((c) =>
+  c.json(envelope({ error: "not_found", path: c.req.path }), 404),
+);
+
+console.log(`finance-panel listening on http://${HOSTNAME}:${PORT}`);
+
+export default {
+  port: PORT,
+  hostname: HOSTNAME,
+  fetch: app.fetch,
+};
