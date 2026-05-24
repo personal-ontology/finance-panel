@@ -12,6 +12,7 @@ const SOURCE = "finance";
 const PORT = Number(process.env.PORT || 8001);
 const HOSTNAME = process.env.HOSTNAME || "127.0.0.1";
 const BEARER_TOKEN = process.env.PANEL_BEARER_TOKEN; // when set, all requests must carry it
+const REFRESH_INTERVAL_HOURS = Number(process.env.REFRESH_INTERVAL_HOURS || 12);
 
 function envelope<T>(data: T) {
   return {
@@ -139,7 +140,35 @@ app.notFound((c) =>
   c.json(envelope({ error: "not_found", path: c.req.path }), 404),
 );
 
-console.log(`finance-panel listening on http://${HOSTNAME}:${PORT}`);
+// ── Auto-refresh scheduler ──────────────────────────────────────────────────
+// Runs in-process via setInterval. Fires once ~10s after startup (smoke check),
+// then every REFRESH_INTERVAL_HOURS. Skips silently when there's no valid
+// session so a stale/expired consent doesn't spam errors.
+async function scheduledRefresh(reason: "startup" | "interval") {
+  const session = loadValidSession();
+  if (!session) {
+    console.log(`[scheduler:${reason}] skipped — no valid session`);
+    return;
+  }
+  console.log(`[scheduler:${reason}] starting refresh at ${new Date().toISOString()}`);
+  try {
+    const result = await refreshAll(session);
+    const summary = result.accounts
+      .map((a) => `${a.name || a.uid.slice(0, 8)}=${a.transactions_inserted}new`)
+      .join(", ");
+    console.log(`[scheduler:${reason}] done — ${summary}`);
+  } catch (e) {
+    console.error(`[scheduler:${reason}] error:`, (e as Error).message);
+  }
+}
+
+const intervalMs = REFRESH_INTERVAL_HOURS * 60 * 60 * 1000;
+setTimeout(() => scheduledRefresh("startup"), 10_000);
+setInterval(() => scheduledRefresh("interval"), intervalMs);
+
+console.log(
+  `finance-panel listening on http://${HOSTNAME}:${PORT} — auto-refresh every ${REFRESH_INTERVAL_HOURS}h`,
+);
 
 export default {
   port: PORT,
