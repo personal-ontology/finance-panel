@@ -96,3 +96,49 @@ export type BalancesResponse = {
 export async function getBalances(accountUid: string): Promise<BalancesResponse> {
   return call("GET", `/accounts/${accountUid}/balances`);
 }
+
+export type Transaction = {
+  entry_reference: string;
+  transaction_amount: { amount: string; currency: string };
+  booking_date?: string;
+  value_date?: string;
+  transaction_date?: string;
+  credit_debit_indicator?: "CRDT" | "DBIT";
+  status?: string;
+  debtor?: { name?: string };
+  debtor_account?: { iban?: string };
+  creditor?: { name?: string };
+  creditor_account?: { iban?: string };
+  remittance_information?: string[];
+};
+
+export type TransactionsResponse = {
+  transactions: Transaction[];
+  continuation_key?: string;
+};
+
+export async function getTransactions(
+  accountUid: string,
+  opts: { date_from: string; date_to: string; continuation_key?: string },
+): Promise<TransactionsResponse> {
+  const params = new URLSearchParams({
+    date_from: opts.date_from,
+    date_to: opts.date_to,
+  });
+  if (opts.continuation_key) params.set("continuation_key", opts.continuation_key);
+  return call("GET", `/accounts/${accountUid}/transactions?${params}`);
+}
+
+export async function getAllTransactions(
+  accountUid: string,
+  opts: { date_from: string; date_to: string },
+): Promise<Transaction[]> {
+  const all: Transaction[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await getTransactions(accountUid, { ...opts, continuation_key: cursor });
+    all.push(...page.transactions);
+    cursor = page.continuation_key;
+  } while (cursor);
+  return all;
+}
