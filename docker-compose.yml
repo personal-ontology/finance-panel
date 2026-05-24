@@ -1,0 +1,13 @@
+services:
+  finance-panel:
+    build: .
+    container_name: finance-panel
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:8001:8001"
+    volumes:
+      # Persistent SQLite store + saved session
+      - ./data:/app/data
+      # Enable Banking private key (read-only, mounted as a single file)
+      - ./secrets/private_key.pem:/app/secrets/private_key.pem:ro

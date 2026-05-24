@@ -11,6 +11,7 @@ import {
 const SOURCE = "finance";
 const PORT = Number(process.env.PORT || 8001);
 const HOSTNAME = process.env.HOSTNAME || "127.0.0.1";
+const BEARER_TOKEN = process.env.PANEL_BEARER_TOKEN; // when set, all requests must carry it
 
 function envelope<T>(data: T) {
   return {
@@ -21,6 +22,18 @@ function envelope<T>(data: T) {
 }
 
 const app = new Hono();
+
+// Bearer-auth middleware. No-op when PANEL_BEARER_TOKEN is unset (loopback dev mode).
+// Active when set (deployments behind Caddy on the Hetzner box).
+app.use("*", async (c, next) => {
+  if (!BEARER_TOKEN) return next();
+  const header = c.req.header("Authorization") || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  if (token !== BEARER_TOKEN) {
+    return c.json(envelope({ error: "unauthorized" }), 401);
+  }
+  return next();
+});
 
 // ── Health ──────────────────────────────────────────────────────────────────
 app.get("/health", (c) => {
