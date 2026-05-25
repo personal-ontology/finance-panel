@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { Cron } from "croner";
 import { refreshAll, loadValidSession } from "./refresh.ts";
 import {
   listAccounts,
@@ -15,7 +16,8 @@ const SOURCE = "finance";
 const PORT = Number(process.env.PORT || 8001);
 const HOSTNAME = process.env.HOSTNAME || "127.0.0.1";
 const BEARER_TOKEN = process.env.PANEL_BEARER_TOKEN; // when set, all requests must carry it
-const REFRESH_INTERVAL_HOURS = Number(process.env.REFRESH_INTERVAL_HOURS || 12);
+const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "0 7,12,17,22 * * *"; // 07:00 12:00 17:00 22:00
+let currentTimezone = process.env.TIMEZONE || "Europe/Berlin";
 
 function envelope<T>(data: T) {
   return {
@@ -77,6 +79,11 @@ app.get("/health", (c) => {
         : null,
       accounts_count: accounts.length,
       last_refresh_at: lastRefresh,
+      schedule: {
+        cron: CRON_SCHEDULE,
+        timezone: currentTimezone,
+        next_run: cronJob?.nextRun()?.toISOString() ?? null,
+      },
     }),
   );
 });
@@ -146,16 +153,52 @@ app.post("/refresh", async (c) => {
   }
 });
 
+// ── Set / update scheduler timezone ─────────────────────────────────────────
+// Mac sends its current IANA timezone here (via a launchd agent) so the box's
+// 4x/day cron fires at the right local-time slots regardless of where Paul is.
+app.post("/timezone", async (c) => {
+  let body: { tz?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(envelope({ error: "invalid_json" }), 400);
+  }
+  const newTz = typeof body?.tz === "string" ? body.tz : "";
+  if (!newTz) return c.json(envelope({ error: "missing tz" }), 400);
+  // Validate by constructing a throwaway cron with this tz — invalid IANA throws.
+  try {
+    new Cron("0 0 * * *", { timezone: newTz, paused: true });
+  } catch {
+    return c.json(envelope({ error: "invalid_timezone", tz: newTz }), 400);
+  }
+  const changed = newTz !== currentTimezone;
+  if (changed) {
+    console.log(`[scheduler] timezone changed: ${currentTimezone} -> ${newTz}`);
+    currentTimezone = newTz;
+    scheduleCron();
+  }
+  return c.json(
+    envelope({
+      ok: true,
+      timezone: currentTimezone,
+      changed,
+      next_run: cronJob?.nextRun()?.toISOString() ?? null,
+    }),
+  );
+});
+
 // ── 404 fallback ────────────────────────────────────────────────────────────
 app.notFound((c) =>
   c.json(envelope({ error: "not_found", path: c.req.path }), 404),
 );
 
 // ── Auto-refresh scheduler ──────────────────────────────────────────────────
-// Runs in-process via setInterval. Fires once ~10s after startup (smoke check),
-// then every REFRESH_INTERVAL_HOURS. Skips silently when there's no valid
-// session so a stale/expired consent doesn't spam errors.
-async function scheduledRefresh(reason: "startup" | "interval") {
+// Cron-driven via croner with a configurable IANA timezone. Default schedule
+// fires at 07:00, 12:00, 17:00, 22:00 local. Timezone is the operator's Mac's
+// timezone, kept in sync by a launchd agent POSTing to /timezone. Also fires
+// once ~10s after startup as a smoke check. Skips silently with a log line
+// when there's no valid session.
+async function scheduledRefresh(reason: string) {
   const session = loadValidSession();
   if (!session) {
     console.log(`[scheduler:${reason}] skipped — no valid session`);
@@ -173,16 +216,34 @@ async function scheduledRefresh(reason: "startup" | "interval") {
   }
 }
 
-const intervalMs = REFRESH_INTERVAL_HOURS * 60 * 60 * 1000;
-setTimeout(() => scheduledRefresh("startup"), 10_000);
-setInterval(() => scheduledRefresh("interval"), intervalMs);
+let cronJob: Cron | null = null;
+function scheduleCron() {
+  if (cronJob) cronJob.stop();
+  cronJob = new Cron(CRON_SCHEDULE, { timezone: currentTimezone }, () =>
+    scheduledRefresh("cron"),
+  );
+  const next = cronJob.nextRun();
+  console.log(
+    `[scheduler] cron='${CRON_SCHEDULE}' tz=${currentTimezone} next=${next?.toISOString() ?? "never"}`,
+  );
+}
 
-console.log(
-  `finance-panel listening on http://${HOSTNAME}:${PORT} — auto-refresh every ${REFRESH_INTERVAL_HOURS}h`,
-);
+scheduleCron();
+setTimeout(() => scheduledRefresh("startup"), 10_000);
+
+console.log(`finance-panel listening on http://${HOSTNAME}:${PORT}`);
 
 export default {
   port: PORT,
   hostname: HOSTNAME,
   fetch: app.fetch,
 };
+
+// Helpers exposed inside the same module for /health
+export function getScheduleInfo() {
+  return {
+    cron: CRON_SCHEDULE,
+    timezone: currentTimezone,
+    next_run: cronJob?.nextRun()?.toISOString() ?? null,
+  };
+}
