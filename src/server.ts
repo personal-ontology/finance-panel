@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { Cron } from "croner";
-import { refreshAll, loadValidSession } from "./refresh.ts";
+import { refreshAll, loadValidSession, saveSession } from "./refresh.ts";
+import { startAuth, createSession } from "./enable_banking.ts";
 import {
   listAccounts,
   latestBalances,
@@ -34,7 +35,10 @@ const app = new Hono();
 // `/` and `/favicon.ico` are intentionally exempt — the HTML page itself contains no
 // secrets and asks the user to paste their token, which is stored in localStorage and
 // sent on every subsequent API call.
-const UNAUTHED_PATHS = new Set(["/", "/favicon.ico"]);
+// `/finance/callback` is also exempt — the bank redirects there with no bearer
+// available; we authenticate that request by validating a state parameter we issued
+// when initiating /reauth/start.
+const UNAUTHED_PATHS = new Set(["/", "/favicon.ico", "/finance/callback"]);
 app.use("*", async (c, next) => {
   if (!BEARER_TOKEN) return next();
   if (UNAUTHED_PATHS.has(c.req.path)) return next();
@@ -150,6 +154,73 @@ app.post("/refresh", async (c) => {
     return c.json(envelope({ ok: true, result }));
   } catch (e) {
     return c.json(envelope({ ok: false, error: (e as Error).message }), 500);
+  }
+});
+
+// ── Reauth / add-account flow ───────────────────────────────────────────────
+// Two-step browser flow for renewing the 90-day Enable Banking consent and/or
+// adding additional accounts (e.g. a credit card not selected on the first SCA).
+//
+//   GET /reauth/start         → returns { auth_url } that the operator opens
+//   GET /finance/callback     → receives ?code= back from the bank, exchanges
+//                               for a new session, saves it, redirects to /
+//
+// We issue a random `state` per /reauth/start and stash it in memory. The
+// callback handler validates the state we receive back from the bank against
+// the in-memory set — that's the CSRF defense for the unauthed callback path.
+type PendingState = { issuedAt: number };
+const pendingStates = new Map<string, PendingState>();
+const STATE_TTL_MS = 30 * 60 * 1000;
+
+setInterval(() => {
+  const cutoff = Date.now() - STATE_TTL_MS;
+  for (const [k, v] of pendingStates) if (v.issuedAt < cutoff) pendingStates.delete(k);
+}, 5 * 60 * 1000);
+
+app.get("/reauth/start", async (c) => {
+  const state = crypto.randomUUID();
+  pendingStates.set(state, { issuedAt: Date.now() });
+  try {
+    const { url, authorization_id } = await startAuth(state);
+    return c.json(envelope({ auth_url: url, authorization_id, state }));
+  } catch (e) {
+    pendingStates.delete(state);
+    return c.json(envelope({ error: (e as Error).message }), 500);
+  }
+});
+
+app.get("/finance/callback", async (c) => {
+  const code = c.req.query("code");
+  const state = c.req.query("state");
+  const errorParam = c.req.query("error");
+
+  function errorPage(message: string, status: 400 | 500 = 400) {
+    const safe = message.replace(/</g, "&lt;");
+    return c.html(
+      `<!doctype html><meta charset="utf-8"><title>Reconnect failed</title>` +
+        `<style>body{font-family:-apple-system,sans-serif;background:#282828;color:#eaeaea;padding:40px;max-width:600px;margin:auto}h1{color:#f7768e;font-weight:500}a{color:#7aa2f7}pre{background:#1f1f1f;padding:12px;border-radius:6px;overflow:auto}</style>` +
+        `<h1>Reconnect failed</h1><pre>${safe}</pre><p><a href="/">← back to panel</a></p>`,
+      status,
+    );
+  }
+
+  if (errorParam) return errorPage(`Bank returned an error: ${errorParam}`);
+  if (!code || !state) return errorPage("Missing code or state in callback URL.");
+  if (!pendingStates.has(state)) {
+    return errorPage(
+      "Unknown or expired state — was this SCA initiated by this panel within the last 30 minutes? If not, start again from the panel.",
+    );
+  }
+  pendingStates.delete(state);
+  try {
+    const session = await createSession(code);
+    saveSession(session);
+    console.log(
+      `[reauth] new session saved, valid until ${session.access.valid_until}, ${session.accounts.length} accounts`,
+    );
+    return c.redirect("/?reconnected=1");
+  } catch (e) {
+    return errorPage((e as Error).message, 500);
   }
 });
 

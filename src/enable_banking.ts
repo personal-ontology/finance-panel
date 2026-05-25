@@ -54,12 +54,12 @@ export type StartAuthResponse = {
   authorization_id: string;
 };
 
-export async function startAuth(): Promise<StartAuthResponse> {
+export async function startAuth(state?: string): Promise<StartAuthResponse> {
   const validUntil = new Date(Date.now() + 89 * 24 * 60 * 60 * 1000).toISOString();
   return call("POST", "/auth", {
     access: { valid_until: validUntil },
     aspsp: { name: BANK_NAME, country: BANK_COUNTRY },
-    state: crypto.randomUUID(),
+    state: state ?? crypto.randomUUID(),
     redirect_url: REDIRECT_URI,
     psu_type: "personal",
   });

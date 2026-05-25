@@ -65,6 +65,28 @@
   }
   button:hover:not(:disabled) { background: #333; }
   button:disabled { opacity: 0.5; cursor: default; }
+  button.warn { border-color: var(--orange); color: var(--orange); }
+  button.warn:hover:not(:disabled) { background: rgba(255, 158, 100, 0.13); }
+  .banner {
+    background: rgba(158, 206, 106, 0.13);
+    color: var(--green);
+    border: 1px solid rgba(158, 206, 106, 0.3);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 20px;
+    font-size: 13px;
+  }
+  .meta-row {
+    display: flex;
+    gap: 18px;
+    font-size: 11.5px;
+    color: var(--muted);
+    margin-top: -10px;
+    margin-bottom: 22px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .meta-row strong { color: var(--fg); font-weight: 500; }
   .account { margin-bottom: 36px; }
   .account-head { display: flex; align-items: baseline; gap: 12px; }
   .account-name { font-size: 13px; color: var(--muted); }
@@ -202,6 +224,31 @@ async function refreshNow() {
   }
 }
 
+async function reauth() {
+  const btn = $("reauth");
+  btn.disabled = true;
+  btn.textContent = "Opening bank…";
+  try {
+    const { data } = await api("/reauth/start");
+    window.location.href = data.auth_url;
+  } catch (e) {
+    if (e.message !== "unauthorized") alert("Could not start reauth: " + e.message);
+    btn.disabled = false;
+    btn.textContent = "Reconnect / add account";
+  }
+}
+
+function relTime(iso) {
+  if (!iso) return "—";
+  const ms = new Date(iso).getTime() - Date.now();
+  const abs = Math.abs(ms);
+  const future = ms > 0;
+  const h = abs / 3_600_000;
+  if (h < 1) return future ? `in ${Math.round(abs / 60_000)}m` : `${Math.round(abs / 60_000)}m ago`;
+  if (h < 24) return future ? `in ${Math.round(h)}h` : `${Math.round(h)}h ago`;
+  return future ? `in ${Math.round(h / 24)}d` : `${Math.round(h / 24)}d ago`;
+}
+
 async function render() {
   if (!getToken()) return renderTokenForm();
   $("root").innerHTML = '<div class="empty">Loading…</div>';
@@ -215,14 +262,33 @@ async function render() {
       stale: "● stale",
     }[health.status] || health.status;
 
+    const reconnected = new URLSearchParams(location.search).has("reconnected");
+    const needsReconnect = health.status === "needs_reconnect";
+    const expiresIn = health.session ? health.session.expires_in_days : null;
+
     let html = `
       <header>
         <h1>Finance</h1>
         <span class="status ${esc(health.status)}">${esc(statusLabel)}</span>
         <span class="meta">refreshed ${esc(fmtTs(health.last_refresh_at))}</span>
         <span class="spacer"></span>
+        <button id="reauth" class="${needsReconnect ? "warn" : ""}">Reconnect / add account</button>
         <button id="refresh">Refresh now</button>
       </header>`;
+
+    html += `<div class="meta-row">
+      <div>Next refresh <strong>${esc(relTime(health.schedule?.next_run))}</strong>${
+        health.schedule?.timezone
+          ? ' <span style="opacity:0.6">(' + esc(health.schedule.timezone) + ")</span>"
+          : ""
+      }</div>
+      <div>Session expires <strong>${expiresIn !== null ? esc(expiresIn) + "d" : "—"}</strong></div>
+    </div>`;
+
+    if (reconnected) {
+      html += '<div class="banner">✓ Bank reconnected. Refreshing data…</div>';
+      history.replaceState({}, "", "/");
+    }
 
     if (!data.accounts.length) {
       html += '<div class="empty">No accounts linked.</div>';
@@ -272,6 +338,8 @@ async function render() {
     html += accountSections.join("");
     $("root").innerHTML = html;
     $("refresh")?.addEventListener("click", refreshNow);
+    $("reauth")?.addEventListener("click", reauth);
+    if (reconnected) refreshNow();
   } catch (e) {
     if (e.message !== "unauthorized") {
       $("root").innerHTML = `<div class="empty">Error: ${esc(e.message)}</div>`;
