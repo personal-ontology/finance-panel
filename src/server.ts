@@ -137,6 +137,9 @@ app.get("/accounts/:uid/transactions", (c) => {
 });
 
 // ── Trigger refresh ─────────────────────────────────────────────────────────
+// Optional `?date_from=YYYY-MM-DD` overrides the incremental window logic
+// and pulls everything from that date forward. Used for historical backfills
+// (e.g. first-time-import-from-old-date). Validation: YYYY-MM-DD only.
 app.post("/refresh", async (c) => {
   const session = loadValidSession();
   if (!session) {
@@ -144,13 +147,20 @@ app.post("/refresh", async (c) => {
       envelope({
         ok: false,
         error: "no_valid_session",
-        message: "Run the CLI (`bun run start`) to re-authorize.",
+        message: "Reauthorize at /reauth/start (or via the panel UI).",
       }),
       409,
     );
   }
+  const dateFromOverride = c.req.query("date_from");
+  if (dateFromOverride && !/^\d{4}-\d{2}-\d{2}$/.test(dateFromOverride)) {
+    return c.json(
+      envelope({ ok: false, error: "date_from must be YYYY-MM-DD" }),
+      400,
+    );
+  }
   try {
-    const result = await refreshAll(session);
+    const result = await refreshAll(session, { dateFromOverride });
     return c.json(envelope({ ok: true, result }));
   } catch (e) {
     return c.json(envelope({ ok: false, error: (e as Error).message }), 500);

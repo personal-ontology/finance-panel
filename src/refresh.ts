@@ -74,7 +74,10 @@ export type RefreshResult = {
   ran_at: string;
 };
 
-export async function refreshAll(session: SessionResponse): Promise<RefreshResult> {
+export async function refreshAll(
+  session: SessionResponse,
+  opts?: { dateFromOverride?: string },
+): Promise<RefreshResult> {
   for (const acc of session.accounts) {
     upsertAccount({
       uid: acc.uid,
@@ -96,7 +99,9 @@ export async function refreshAll(session: SessionResponse): Promise<RefreshResul
   for (const acc of session.accounts) {
     const lastRefresh = getLastRefresh(acc.uid);
     let dateFrom: string;
-    if (lastRefresh) {
+    if (opts?.dateFromOverride) {
+      dateFrom = opts.dateFromOverride;
+    } else if (lastRefresh) {
       const lr = new Date(lastRefresh);
       lr.setDate(lr.getDate() - 2);
       dateFrom = ymd(lr);
