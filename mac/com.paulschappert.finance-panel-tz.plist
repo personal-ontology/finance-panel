@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.paulschappert.finance-panel-tz</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/paulschappert/Developer/personal-ontology/finance-panel/mac/tz-sync.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PANEL_URL</key>
+        <string>https://finance.paulschappert.com</string>
+        <key>BEARER_TOKEN_FILE</key>
+        <string>/Users/paulschappert/Developer/personal-ontology-secrets/finance/panel_bearer.txt</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>StandardOutPath</key>
+    <string>/tmp/finance-panel-tz-sync.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/finance-panel-tz-sync.log</string>
+</dict>
+</plist>
