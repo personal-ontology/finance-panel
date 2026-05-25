@@ -53,6 +53,41 @@ db.exec(`
     ON transactions(account_uid, booking_date DESC);
 `);
 
+// Enable Banking re-issues account UIDs on every reauth (same IBAN, new UID).
+// Without migration, every reconnect would double up the data. This collapses
+// the old UID's children (transactions, balances) into the new UID, deduping
+// on the existing PKs, then drops the old account row.
+function migrateAccountUid(oldUid: string, newUid: string): void {
+  const tx = db.transaction(() => {
+    // 1) Drop old-side transactions whose entry_reference already exists under the new UID
+    db.prepare(
+      `DELETE FROM transactions
+       WHERE account_uid = ?
+         AND entry_reference IN (SELECT entry_reference FROM transactions WHERE account_uid = ?)`,
+    ).run(oldUid, newUid);
+    db.prepare("UPDATE transactions SET account_uid = ? WHERE account_uid = ?").run(
+      newUid,
+      oldUid,
+    );
+
+    // 2) Same for balances (PK is account_uid + balance_type + fetched_at)
+    db.prepare(
+      `DELETE FROM balances
+       WHERE account_uid = ?
+         AND (balance_type, fetched_at) IN
+             (SELECT balance_type, fetched_at FROM balances WHERE account_uid = ?)`,
+    ).run(oldUid, newUid);
+    db.prepare("UPDATE balances SET account_uid = ? WHERE account_uid = ?").run(
+      newUid,
+      oldUid,
+    );
+
+    // 3) Drop the stale account row
+    db.prepare("DELETE FROM accounts WHERE uid = ?").run(oldUid);
+  });
+  tx();
+}
+
 export function upsertAccount(row: {
   uid: string;
   iban: string | null;
@@ -63,6 +98,21 @@ export function upsertAccount(row: {
   session_id: string;
   consent_expires_at: string;
 }): void {
+  // If this IBAN already exists under a different UID (i.e. reauth issued a new
+  // account identity for the same real-world account), migrate the old UID's
+  // data over before we INSERT the new one.
+  if (row.iban) {
+    const existing = db
+      .prepare("SELECT uid FROM accounts WHERE iban = ? AND uid != ?")
+      .get(row.iban, row.uid) as { uid: string } | undefined;
+    if (existing) {
+      console.log(
+        `[migrate] re-pointing account ${existing.uid} -> ${row.uid} (iban …${row.iban.slice(-4)})`,
+      );
+      migrateAccountUid(existing.uid, row.uid);
+    }
+  }
+
   db.prepare(
     `INSERT INTO accounts (uid, iban, name, currency, aspsp_name, aspsp_country, session_id, consent_expires_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
